@@ -1,70 +1,45 @@
-"""Single application entry point: terminal repair command or Gradio UI."""
+"""Run one repair from the terminal or open the Gradio page."""
 
 import argparse
+import sys
 from pathlib import Path
 
-from adapters.gradio_ui import create_demo
-from adapters.sandbox.runner import resolve_eval_project, safe_path
-from bootstrap import build_repair_service
+from bootstrap import build_service
+from core.cli_trace import format_repair_trace_event, print_repair_summary
 
 
-def eval_project_argument(value):
-    """Validate a CLI project path before the repair service creates a workspace."""
-    try:
-        resolve_eval_project(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(str(error)) from error
-    return value
+def main(argv: list[str] | None = None) -> int:
+    """Dispatch the selected command and return a non-zero status on failure."""
 
+    parser = argparse.ArgumentParser(description="Run one repair from the terminal.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    repair_parser = subparsers.add_parser("repair")
+    repair_parser.add_argument("project", help="Path to one project under evals/")
+    repair_parser.add_argument("--provider", required=True)
+    subparsers.add_parser("ui")
+    args = parser.parse_args(argv)
 
-def temperature_argument(value):
-    """Parse one portable sampling temperature within the lab's supported range."""
-    try:
-        temperature = float(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("temperature must be a number from 0 to 2.") from error
-    if not 0 <= temperature <= 2:
-        raise argparse.ArgumentTypeError("temperature must be between 0 and 2.")
-    return temperature
-
-
-def main():
-    """Parse the selected interface command and start the requested workflow."""
-    parser = argparse.ArgumentParser(description="Python Repair Agent Lab")
-    commands = parser.add_subparsers(dest="command", required=True)
-    repair = commands.add_parser("repair", help="Repair one instructor-provided evals project from the terminal")
-    repair.add_argument("project_path", metavar="EVAL_PROJECT", type=eval_project_argument,
-                        help="Direct evals project, for example evals/arithmetic")
-    repair.add_argument("--provider", choices=["ollama", "vertex", "openai"],
-                        help="Model provider (default: MODEL_PROVIDER or ollama)")
-    repair.add_argument("--model", help="Provider model identifier")
-    repair.add_argument("--temperature", type=temperature_argument,
-                        help="Sampling temperature from 0 to 2; provider support may vary")
-    repair.add_argument("--research", action="store_true", default=None,
-                        help="Enable bounded GitHub research (requires GITHUB_TOKEN)")
-    repair.add_argument("--langfuse", action="store_true", default=None,
-                        help="Record the repair trajectory in Langfuse (requires optional setup)")
-    commands.add_parser("ui", help="Launch the Gradio interface")
-    args = parser.parse_args()
     if args.command == "ui":
-        create_demo().launch()
-        return
-    if args.temperature is not None:
-        print("temperature:", args.temperature)
-    print("Starting repair. Live model and tool events will appear below.")
-    result = build_repair_service(model=args.model, provider=args.provider, temperature=args.temperature,
-                                  enable_github_research=args.research,
-                                  enable_langfuse=args.langfuse, enable_live_trace=True).repair(args.project_path)
-    print("\nFinal result:", result.summary)
-    print("passed:", result.passed)
-    print("workspace:", result.workspace)
-    print("changed code:")
-    if not result.changed_files:
-        print("- No files changed.")
-    for relative_path in result.changed_files:
-        print(f"\n--- {relative_path} ---")
-        print(safe_path(Path(result.workspace), relative_path).read_text(encoding="utf-8"), end="")
+        from adapters.gradio_ui import create_demo
+
+        workspace_cache = Path.home() / ".cache" / "coding-agent-lab"
+        create_demo().launch(allowed_paths=[str(workspace_cache)])
+        return 0
+
+    def print_trace_event(event: dict[str, object]) -> None:
+        print(format_repair_trace_event(event), flush=True)
+
+    try:
+        result = build_service(args.provider, trace_listener=print_trace_event).repair(
+            args.project
+        )
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print_repair_summary(result)
+    return 0 if result.passed else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
