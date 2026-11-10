@@ -4,286 +4,314 @@
   <img src="docs/assets/python-repair-agent-icon.png" width="180" alt="A repair agent fixes a code bug and verifies the repair">
 </p>
 
-In this lab, you will build a Python repair agent. It receives a small buggy Python project and its tests; it must inspect the code, reproduce the failure, make a focused repair, and run the tests safely. Its output is a visible execution trace, the modified project files, and a final test result.
+> **Before the lab:** complete the [Pre-lab environment check](docs/pre-lab-setup.md). Allow 45 to 60 minutes, plus a local-model download if you choose Ollama. It verifies the environment, model route, GitHub, and Langfuse connections before the activity begins.
 
-**Activity objective:** implement the essential repair-agent loop yourself, then explain how its prompts, tools, test runner, and stopping rules work together as a dependable software system.
+## A guided, from-scratch activity
 
-**Why use an agent?** A one-shot LLM answer cannot inspect the actual project, apply a change, or prove that the change works. An agent creates a bounded loop: it observes the project, chooses an approved action, receives the result, and keeps working until tests verify the repair or its budget ends.
+In this activity, you will build a small Python repair agent with a vibe-coding assistant such as Codex, Claude Code, or Cursor. The agent receives one buggy Python project and its tests. It must inspect the project, reproduce the failure by testing it, make a focused edit, and verify the repair in a Docker sandbox.
 
-## Repository guide
+The final output is a visible action trace, a disposable repaired copy of the project, and the final test result. You are not given agent source code to complete. You will create the folders, files, tests, and implementation yourself. Your coding assistant may write code, but you are responsible for directing it, reviewing its changes, and running every checkpoint.
 
-This repository tree provides an overview of the files used in the lab. Colored markers identify the three files students modify: 🟨 Exercise 1, 🟦 Exercise 2, and 🟪 Exercise 3.
+The required path, Tasks 0 through 6 and Task 8, is designed for a
+two-and-a-half-hour lab. Task 7 is an optional live-model extension.
+
+## Objective
+
+Build a repair agent that:
+
+- works only on one instructor-provided project selected from `evals/`;
+- reproduces a failing test before it edits code;
+- runs project code only inside Docker;
+- accepts only a small, explicit set of model actions;
+- stops when tests pass, the model response is invalid, or its decision budget ends; and
+- can run from a terminal and a small web interface.
+
+## Repair workflow at a glance
+
+The agent works on a copy, never directly on `evals/`. The model proposes one action at a time; the surrounding Python program supplies the case context, limits the available actions, records the observations, and decides when to stop.
+
+```mermaid
+flowchart LR
+    select["1. Select an eval project"] --> copy["2. Copy it to a workspace"]
+    copy --> inspect["3. Read the test and source code"]
+    inspect --> reproduce["4. Run tests in Docker"]
+    reproduce -->|Tests fail| edit["5. Edit the workspace copy"]
+    edit --> verify["6. Run tests in Docker again"]
+    verify -->|Tests still fail| inspect
+    verify -->|Tests pass| result["7. Return trace, changed files, and result"]
+```
+
+Follow this evidence order:
+
+1. 🟦 **Inspect local code.** Read the relevant test and source files in the copied workspace.
+2. 🟨 **Reproduce the bug.** Run a sandboxed test and observe a failing result before editing.
+3. 🟧 **Make one focused edit.** Change only the copied workspace file needed to address the observed failure.
+4. 🟩 **Verify the repair.** Run a later sandboxed test and accept the repair only if it passes.
+
+**Sandboxed test** means `pytest` runs inside a short-lived Docker container with networking disabled. It receives only the disposable workspace copy, not the original `evals/` project or the rest of the host computer.
+
+If the model sends an invalid action or the decision budget ends, the agent stops and reports the failure instead of guessing.
+
+## Before you begin
+
+Set up these required tools before class:
+
+- A GitHub account and [Git](https://git-scm.com/downloads/). You need permission to fork the course repository and push to your own fork.
+- [Python 3.11 or newer](https://www.python.org/downloads/).
+- Docker with Linux-container support. Install [Docker Desktop for macOS](https://docs.docker.com/desktop/setup/install/mac-install/), [Windows](https://docs.docker.com/desktop/setup/install/windows-install/), or [Linux](https://docs.docker.com/desktop/setup/install/linux/), unless your instructor has already provided a working Docker Engine. Start Docker before Task 2. Colima, Rancher Desktop and Podman also work, provided the repair workspace is created under your home directory as Task 2 requires.
+- A code editor and one vibe-coding assistant, such as Codex, Claude Code, or Cursor.
+- A browser and Internet connection for the initial fork, Python-package installation, and Docker image download.
+
+Keep some free disk space for the Docker image. The pre-lab page asks you to
+test a preferred local Ollama model or one cloud fallback before class; Task 7
+is where you connect that prepared model route to the agent.
+
+Check your local tools before class:
+
+```bash
+git --version
+python3 --version       # macOS or Linux
+docker info
+```
+
+In Windows PowerShell, use `py --version` instead of `python3 --version`.
+`docker info` must print a **Server** section and exit successfully. If it does
+not, start Docker Desktop or ask the instructor to help with the local Docker
+installation before you begin Task 2.
+
+## Command convention
+
+Unless a task says otherwise, run its commands from the root of your cloned
+repository with the virtual environment active. If you open a new terminal,
+activate it again before running `python`:
+
+**macOS or Linux**
+
+```bash
+source .venv/bin/activate
+```
+
+**Windows PowerShell**
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+The **host computer** in this guide means your normal computer outside Docker.
+The host starts the Docker container; evaluation-project Python runs only
+inside that container.
+
+You do **not** need Ollama, a large local model, a cloud-model account, or an API key for the required build and scripted checkpoints. Ollama is needed only for the optional live-model task.
+
+## Optional integrations
+
+`pip install -r requirements.txt` installs the required Python libraries,
+including `pytest` and Gradio. Do not install those separately. It also
+includes the OpenAI, Google, and Langfuse libraries so optional extensions can
+be added without a second dependency setup.
+
+The required Tasks 0 through 8 build `ScriptedClient` and, optionally,
+`OllamaClient`. They do not require any cloud account or API key. Tasks 9 and
+10 are separate opt-in extensions for bounded GitHub evidence and Langfuse
+Cloud trajectory recording.
+
+| Optional integration | When to use it | Setup |
+| --- | --- | --- |
+| Ollama | Optional Task 7 live model run | Install from [Ollama Download](https://ollama.com/download), then download an installed model with `ollama pull ...`. |
+| GitHub code search | Optional Task 9 research extension | Create a short-lived, least-privilege token only if you complete [Task 9](tasks/09-github-research.md). The adapter calls GitHub's code-search API only. |
+| Langfuse Cloud | Optional Task 10 observability extension | Create a Cloud project and API keys only if you complete [Task 10](tasks/10-langfuse-observability.md). |
+| OpenAI or Google Vertex AI | Only if the instructor assigns a later extension | Follow the instructor's extension instructions. They are not part of this activity. |
+
+Keep credentials out of the repository. These additions do not change the sandbox rule: the model client, optional research adapter, and observability code run on the host, while evaluation-project code runs only in Docker.
+
+## Which branch to use
+
+This activity is the `guided-from-scratch-activity` branch of the repository.
+Task 0 creates your work branch from it. The default branch holds a different
+version of the lab with the agent code already present; do not start from it.
+
+## Current repository structure
+
+The starter provides this guide, task handouts, `LICENSE`, `.gitignore`, the repair-agent icon, `requirements.txt`, and five fixed evaluation projects. It must not contain an implemented agent, hidden tests, model keys, or a completed Docker runner. Keep the working implementation in the instructor repository only.
+
+The supplied evaluation projects are:
+
+```text
+evals/
+├── arithmetic/          # small calculator bug
+├── balanced_brackets/   # matching-type boundary bug
+├── median/              # even-length boundary bug
+├── multi_function/      # several text utility functions
+└── unique_words/        # order-preservation bug
+```
+
+Do not edit files in `evals/`. Your repair agent must copy the selected project into a disposable workspace before it changes anything. The cases are teaching-sized fixtures, not HumanEval+ tasks. They follow the same useful evaluation habit: test ordinary behavior and a boundary or semantic case that a superficial repair can miss.
+
+## How to use a vibe-coding assistant
+
+Work in short tasks. For each task:
+
+1. Give the assistant only the stated task and files.
+2. Ask it to run the stated checkpoint.
+3. Read the diff before accepting it.
+4. Run the checkpoint yourself.
+5. Commit the working task.
+
+Use this prompt pattern whenever you ask for help:
+
+```text
+You are helping me build a teaching-sized Python repair agent.
+
+Read the named files before changing anything. Work only on the files listed
+in this task. Keep the repair decision code separate from Docker, model HTTP,
+and Gradio code. Do not add a host shell, arbitrary project upload, Internet
+search, API keys, or packages beyond those requested. An explicitly named
+optional extension task is the only exception.
+
+Task: <paste the task for this stage>
+
+Verification: run <paste the command>. Report the actual result and every
+file changed. Do not claim success if the command fails.
+```
+
+Treat the assistant's output as a proposed change, not proof that the code is correct.
+
+## Safety rules
+
+These rules are requirements, not suggestions.
+
+- The agent may work only on a copied project selected from `evals/`.
+- Never execute evaluation-project Python with host Python.
+- The host may start Docker, but Docker alone runs `pytest` and generated project code.
+- Do not give the model a free-form shell tool.
+- Do not provide arbitrary file paths, public uploads, or Internet access in the required activity.
+- Reject absolute paths and paths that escape the workspace, such as `../secret.txt`.
+- Do not put model or service secrets in source files, commits, or traces.
+- Require a failing sandboxed test result before allowing an edit.
+- Keep a short public action summary, not private model reasoning.
+
+## A map of the files you will build
+
+Do not try to understand or implement this whole tree now. It is a map for the activity. Each task tells you which small group of files to create next and what to check before moving on. The small `__init__.py` files simply tell Python that a folder can be imported as a package.
 
 ```text
 coding-agent-lab/
-├── main.py                         # application entry point
-├── bootstrap.py                    # composition root and dependency injection
-├── core/                           # repair policy, prompts, models, and ports
-│   ├── repair_agent.py             # 🟦 TODO 2: agent loop
-│   ├── repair_service.py           # repair use case
-│   ├── prompts.py                  # model-facing messages
-│   ├── models.py                   # repair result data
-│   └── ports.py                    # interfaces used by the core
-├── adapters/                       # concrete technology integrations
-│   ├── gradio_ui.py                # 🟪 TODO 3: UI adapter
-│   ├── models/                     # Ollama, OpenAI, and Vertex adapters
+├── README.md                          # this guide
+├── requirements.txt                   # supplied Python dependencies
+├── tasks/                             # supplied task handouts
+│   ├── 00-setup.md
+│   ├── 01-core-vocabulary.md
+│   ├── 02-sandbox-tools.md
+│   ├── 03-prompts-and-clients.md
+│   ├── 04-repair-loop.md
+│   ├── 05-cli-repair.md
+│   ├── 06-gradio-ui.md
+│   ├── 07-live-ollama.md
+│   ├── 08-final-demonstration.md
+│   ├── 09-github-research.md        # optional extension
+│   └── 10-langfuse-observability.md # optional extension
+├── pytest.ini                         # you create this
+├── main.py                            # you create this
+├── bootstrap.py                       # you create this
+├── core/                              # you create this folder
+│   ├── __init__.py
+│   ├── models.py
+│   ├── ports.py
+│   ├── prompts.py
+│   ├── repair_agent.py
+│   └── repair_service.py
+├── adapters/                          # you create this folder
+│   ├── __init__.py
+│   ├── gradio_ui.py
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── ollama.py
+│   │   └── scripted.py
 │   ├── sandbox/
-│   │   ├── repair_tools.py          # 🟨 TODO 1: safe tools
-│   │   ├── runner.py                # Docker-only test and inspection runner
-│   │   └── Dockerfile
-│   ├── research/                   # optional GitHub research adapter
-│   └── observability/              # live terminal trace and optional Langfuse adapter
-├── evals/                          # fixed buggy projects and their tests
+│       ├── __init__.py
+│       ├── Dockerfile
+│       ├── runner.py
+│       └── repair_tools.py
+│   ├── research/                    # optional Task 9 package
+│   │   ├── __init__.py
+│   │   └── github_research.py
+│   └── observability/               # optional Task 10 package
+│       ├── __init__.py
+│       └── langfuse.py
+├── evals/                             # supplied, never modified
 │   ├── arithmetic/
-│   └── multi_function/
-├── tests/                          # public exercise checkpoints
-├── docs/                           # setup guide, exercise handouts, and optional guides
-└── requirements*.txt               # base and optional dependency sets
+│   ├── balanced_brackets/
+│   ├── median/
+│   ├── multi_function/
+│   └── unique_words/
+└── tests/                             # you create this folder
+    ├── test_tools.py
+    ├── test_agent.py
+    ├── test_github_research.py        # optional Task 9
+    └── test_langfuse_observability.py # optional Task 10
 ```
 
-The next section connects these folders to their Clean Architecture roles.
-
-## Clean Architecture of the Repair Agent
-
-The focus is not only the LLM. It is the surrounding **agent harness**: prompts, bounded tools, a sandbox, stopping rules, and a user interface. To organize this AI system with Software Engineering for AI (**SE4AI**) practices, the lab uses Robert C. Martin's **Clean Architecture** and its **Dependency Rule**: source-code dependencies point inward, from changing technology details toward stable policy.
-
-In plain language, the repair rules live in `core/` and should not depend on a particular UI, model provider, or Docker command. The core describes the small operations it needs using Python `Protocol` interfaces, called **ports**. Code in `adapters/` supplies the concrete implementations. Examples include an Ollama client, the Docker test runner, and the Gradio UI.
-
-**Why this matters for Software Engineering for AI:** LLM output is probabilistic, providers and prompts evolve, and external services fail. The harness must therefore enforce workspace boundaries, test execution, traceability, and stopping rules in deterministic code. Separating these responsibilities lets us replace Ollama with a cloud model, test the loop with `ScriptedClient`, or change Gradio without rewriting the repair policy. You do not need to memorize the architecture terms before starting the exercises. Use them as a map for deciding where a responsibility belongs. For optional background, read [The Clean Architecture](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html).
-
-```mermaid
-flowchart LR
-    subgraph adapters[Interface Adapters]
-        cli[CLI]
-        ui[Gradio UI]
-    end
-
-    subgraph usecases[Use Cases]
-        service[RepairService]
-    end
-
-    subgraph core[Entities and agent policy]
-        agent[RepairAgent]
-        result[RepairResult]
-        ports[Ports]
-    end
-
-    subgraph drivers[Frameworks and Drivers]
-        models[Ollama, OpenAI, Vertex]
-        runtime[Files, GitHub, Docker]
-    end
-
-    cli --> service
-    ui --> service
-    service --> agent
-    agent --> result
-    agent --> ports
-    models -. implements .-> ports
-    runtime -. implements .-> ports
-
-    classDef inner fill:#ddf4ff,stroke:#0969da,color:#24292f
-    classDef outer fill:#f6f8fa,stroke:#57606a,color:#24292f
-    class agent,result,ports inner
-    class cli,ui,service,models,runtime outer
-```
-
-### How the layers map to this repository
-
-- `core/`: **Entities**, **Use Cases**, and policy-owned **Ports**. It contains the repair policy and does not import user interfaces, Docker, model SDKs, GitHub, or Langfuse.
-- `adapters/`: **Interface Adapters** plus **Frameworks & Drivers**. It translates the core's ports to concrete technologies.
-  - `models/ollama.py` owns the Ollama integration; the OpenAI and Vertex adapters follow the same boundary.
-  - `research/github_research.py` is the optional external-research adapter.
-  - `observability/terminal.py` prints the live CLI trajectory; `observability/langfuse.py` is the optional trajectory-recorder adapter.
-  - `sandbox/` owns the disposable workspace and Docker isolation.
-  - `gradio_ui.py` remains a small presentation adapter at the package root.
-- `evals/`: fixed, reproducible repair and evaluation fixtures.
-- `bootstrap.py`: the **Composition Root**. It performs **Dependency Injection** by connecting concrete adapters to core ports.
-- `core/ports.py`: the **Ports and Adapters (Hexagonal Architecture)** contracts. Concrete adapters satisfy these contracts; the core depends only on the contracts.
-- `adapters/sandbox/runner.py`: the execution boundary. Generated project code runs only in its Docker runner, never directly on the host.
-
-This follows the **Dependency Rule**: source-code dependencies point inward, from volatile technology details toward stable policy. [Martin’s Dependency Rule](https://www.informit.com/articles/article.aspx?p=2832399), [AWS on Hexagonal Architecture](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/hexagonal-architecture.html)
-
-## Setup and reproducibility
-
-Before Exercise 1, follow [Setup and reproducibility](docs/setup.md). It gives the exact fork, environment, model-provider, deterministic-checkpoint, Docker, and run-recording steps.
-
-## Required 2.5-hour path
-
-1. Complete [Exercise 1: Safe tools](docs/exercises/01-safe-tools.md) and its tool checkpoint.
-2. Complete [Exercise 2: Agent loop](docs/exercises/02-agent-loop.md) and its deterministic agent-loop checkpoint.
-3. Complete [Exercise 3: Gradio UI adapter](docs/exercises/03-gradio-ui.md) and launch the UI.
-4. Use the provider configured during setup, or choose one [model provider for the live final demonstration](docs/model-providers.md).
-
-The GitHub-research and Langfuse sections are optional extensions; skip them on the first pass through the lab.
-
-[Exercise 4: Temperature experiment](docs/exercises/04-temperature-experiment.md) is an optional 20-minute empirical extension. It requires a configured live model and does not add to the required 2.5-hour implementation path.
-
-## Architecture map
-
-| Clean Architecture ring | Lab package | Responsibility |
-| --- | --- | --- |
-| Interface Adapters | `main.py`, `adapters/gradio_ui.py`, `adapters/sandbox/repair_tools.py` | Terminal/Gradio translation and the safe repair-tool adapter. |
-| Use Cases | `core/repair_service.py` | The `RepairService` repair use case. |
-| Entities / policy | `core/models.py`, `core/prompts.py`, `core/repair_agent.py`, `core/ports.py` | `RepairResult`, model-facing prompt policy, agent-loop policy, and ports. |
-| Frameworks & Drivers | `adapters/models/ollama.py`, `adapters/research/github_research.py`, `adapters/observability/`, `adapters/sandbox/runner.py` | Model, GitHub, terminal/Langfuse observability, filesystem, and restricted Docker execution. |
-| Composition Root | `bootstrap.py` | Wires concrete adapters to ports using dependency injection. |
-
-## One entry point
-
-Run `main.py`; it is the only application entry point. `bootstrap.py` is imported by `main.py` and is not a program to run directly.
-
-```bash
-python main.py repair evals/arithmetic
-python main.py repair evals/arithmetic --provider ollama --model qwen2.5-coder:7b
-python main.py repair evals/arithmetic --provider ollama --model qwen2.5-coder:7b --temperature 0.0
-python main.py ui
-```
-
-The `repair` command prints the trajectory live: repair start, each JSON model response, each tool observation, and the final pass or stop result. It then prints the changed code. This lets you watch the agent's decisions while it is running rather than waiting for a final trace.
-
-## Project selection and repaired code
-
-The terminal accepts one instructor-provided project folder under `evals/`, for example `evals/arithmetic` or `evals/multi_function`. The short names `arithmetic` and `multi_function` are accepted as convenience aliases. A path outside `evals/`, the `evals/` directory itself, path traversal, arbitrary uploads, and arbitrary host directories are rejected.
-
-For every repair, the harness copies the selected project into a new disposable workspace. It edits and tests only that copy. The CLI prints the changed source files after the trace; Gradio displays them and provides the repaired workspace as a ZIP download.
-
-### Why the project copy and Docker sandbox are both necessary
-
-```mermaid
-flowchart LR
-    baseline["(1) Original buggy project<br/>evals/arithmetic<br/>never changed"]
-    copy["(2) Working copy<br/>temporary and safe to edit"]
-    agent["(3) Repair agent<br/>reads and edits the working copy"]
-    docker["(4) Safe test sandbox<br/>runs pytest on the copy<br/>no network"]
-    result["(5) Repair outcome<br/>trace + changed code + test result"]
-
-    baseline -->|make a copy| copy
-    copy --> agent
-    agent -->|save repair| copy
-    copy -->|test read-only copy| docker
-    docker -->|test result| agent
-    agent --> result
-
-    classDef baseline fill:#dafbe1,stroke:#1a7f37,color:#24292f
-    classDef workspace fill:#ddf4ff,stroke:#0969da,color:#24292f
-    classDef sandbox fill:#fff8c5,stroke:#9a6700,color:#24292f
-    classDef outcome fill:#f6f8fa,stroke:#57606a,color:#24292f
-    class baseline baseline
-    class copy,agent workspace
-    class docker sandbox
-    class result outcome
-```
-
-The **copy** preserves a reproducible baseline: every repair begins from the same instructor fixture, and the original under `evals/` remains available for comparison. Docker is a different control: it is the **execution sandbox**. It runs project tests from a read-only mount with no network and resource limits, so generated project code never runs on the host. A copy protects the fixture; a sandbox constrains execution. We use both.
-
-## The agent harness
-
-An **agent harness** is the software surrounding an LLM that turns a single text-generation call into a bounded, observable workflow. The model supplies decisions; the harness owns the engineering controls.
-
-Read the diagram from left to right. The middle steps repeat until the tests pass or the agent reaches its fixed step budget. GitHub renders this Mermaid diagram directly in the README.
-
-```mermaid
-flowchart LR
-    task["(1) Give the agent<br/>a project and repair rules"]
-    model["(2) Model requests<br/>one action"]
-    check["(3) Harness checks<br/>the request"]
-    tool["(4) Safe tool runs<br/>read · edit · test"]
-    evidence["(5) Return evidence<br/>to the model"]
-    stop{"Tests pass or<br/>step budget ends?"}
-    result["(6) Show the result<br/>trace + changed code + tests"]
-
-    task --> model --> check --> tool --> evidence --> stop
-    stop -- keep repairing --> model
-    stop -- stop --> result
-
-    classDef input fill:#ddf4ff,stroke:#0969da,color:#24292f
-    classDef loop fill:#f6f8fa,stroke:#57606a,color:#24292f
-    classDef decision fill:#fff8c5,stroke:#9a6700,color:#24292f
-    classDef outcome fill:#dafbe1,stroke:#1a7f37,color:#24292f
-    class task input
-    class model,check,tool,evidence loop
-    class stop decision
-    class result outcome
-```
-
-In this lab, `core/repair_agent.py` is the **harness controller**. Its responsibilities are to construct the task context, maintain conversation state, parse model requests, dispatch only approved tools, record a trace, return observations to the model, and stop on passing tests or a fixed budget. The LLM adapter never gains shell access or direct access to the host project.
-
-### Strict JSON action contract
-
-Every model response must be one JSON action object with only the fields needed for its selected tool. The provider adapters request JSON output, and `core/prompts.py` validates the object before the harness dispatches any tool. JSON output mode reduces formatting errors, but it is not authorization: an array, Markdown fence, unknown tool, missing argument, or extra field is rejected and never reaches the workspace or Docker runner.
-
-### Program-repair rule: reproduce before repair
-
-A repair begins with evidence, not a plausible-looking code change. The supplied `evals/` fixtures are designed to fail reproducibly in the Docker runner. The system prompt therefore requires this sequence: inspect a test, run it to observe the failure, make a focused edit, then run the tests again. A passing post-edit result is the repair verdict. If the initial test run passes or cannot run, do not make a speculative change. Keep the trace and report the unexpected baseline result to the instructor.
-
-`core/prompts.py` keeps the model-facing conversation policy separate from loop control. It defines the `system`, `user`, and `assistant` role constants; the base system policy; the optional GitHub-research policy; the case request template; and the `TOOL_RESULT` formatter. `RepairAgent` imports these pieces rather than embedding long prompts.
-
-`core/ports.py` is the **harness boundary**: it defines what a model can ask for (`RepairToolsPort`), what a provider must supply (`ChatModelPort`), and the optional `TrajectoryObserverPort`. `adapters/sandbox/` is the **tool runtime**, and `evals/` supplies fixed tasks. This separation lets students replace Ollama with a cloud provider, replace the UI, record to Langfuse, or test with `ScriptedClient` without rewriting the harness.
-
-## Internet access is a deliberate tool-policy decision
-
-This lab is **offline by default**. The agent may inspect only the selected evaluation fixture and run its supplied tests. It has no web-search, browser, host-shell, package-installation, or arbitrary-upload tool unless an instructor or student explicitly enables the optional [GitHub-research extension](docs/github-research.md).
-
-That choice is intentional:
-
-- Repairs are reproducible: the same fixture and test result do not depend on changing web pages or search rankings.
-- Evaluation is fair: every student agent receives the same evidence.
-- The attack surface is smaller: untrusted web content cannot steer the model, and generated code cannot exfiltrate data through a network tool.
-- Students can first observe the essential harness loop: context → model decision → bounded tool → observation. This avoids introducing a second, unrelated retrieval system.
-
-## Optional GitHub research
-
-After the core lab, follow [Optional GitHub research: advanced extension](docs/github-research.md) to enable bounded, cited GitHub code-search evidence. It is disabled by default and never replaces local test verification.
-
-## Tool capability levels
-
-The agent has three basic repair tools: `read_file`, `edit_file`, and `run_tests`. They make its authority easy to see: it can read an approved workspace, edit only that workspace, and execute tests only in Docker.
-
-For a repository with many files, the harness also supplies `run_command(command)`. This is **not a host shell** and is not a general terminal. It accepts a short command string, parses it without a shell, and permits only the read-only inspection commands `find`, `grep`, and `ls`. It runs in the same Docker container with no network, a read-only project mount, CPU/memory/PID limits, a 10-second timeout, and a bounded display result. It cannot edit the project or replace `run_tests`.
-
-When GitHub research is explicitly enabled, `search_github(query)` is a separate **external evidence** capability. Unlike `run_command`, it makes a network request from the outer research adapter, never from Docker. This distinction is intentional: the harness gives each capability a clear boundary and trace.
-
-Examples:
-
-```json
-{"tool":"run_command","command":"find . -maxdepth 2 -type f"}
-{"tool":"run_command","command":"grep -R \"normalize_name\" ."}
-```
-
-The runner rejects commands such as `python`, `pip`, `curl`, `sh`, and `rm`. This demonstrates an industry principle: give an agent the **least powerful capability that solves the task**, then expand it deliberately as repository complexity grows.
-
-## Exercises: complete in order
-
-Run each checkpoint from the repository root. Exercises 1 and 2 need no model provider or API key. Exercise 4 uses a configured live model.
-
-1. [Exercise 1: Safe tools (25 minutes)](docs/exercises/01-safe-tools.md): implement the workspace-scoped read, edit, and test tools.
-2. [Exercise 2: Agent loop (65 minutes)](docs/exercises/02-agent-loop.md): implement the model-to-tool repair harness.
-3. [Exercise 3: Gradio UI adapter (20 minutes)](docs/exercises/03-gradio-ui.md): present the repair result in the provided interface.
-4. [Exercise 4: Temperature experiment (20 minutes, optional)](docs/exercises/04-temperature-experiment.md): compare repair traces under controlled model sampling settings.
-
-## Model provider for the live demonstration
-
-After Exercises 1 and 2 pass, follow [Model providers: choose one for the live demonstration](docs/model-providers.md). It covers local Ollama, Vertex AI Gemini, and the OpenAI API. No provider is needed for the deterministic checkpoints. It is also required for the optional temperature experiment.
-
-## Optional observability extension
-
-After the core lab, follow [Optional Langfuse observability: trajectory analysis extension](docs/observability.md) to analyze repair trajectories across runs. It is not required for any exercise checkpoint.
-
-## Final demonstration
-
-1. Show `pytest -q` passing.
-2. Explain model JSON → tool → `TOOL_RESULT` → model.
-3. Point out the harness controls and explain why the model is not trusted with host shell execution.
-4. Show why `RepairAgent` can be tested with `ScriptedClient` and `RepairTools` without Gradio/Ollama.
-5. Run **arithmetic** through the CLI or Gradio UI with one configured provider (Ollama, Vertex, or OpenAI).
-6. Identify the security boundary: only `adapters/sandbox/runner.py` executes case code or the restricted inspection command, inside Docker and not on the host.
-7. Optional: enable GitHub research, show a cited `search_github` observation in the trace, and explain why the returned code is only a hypothesis until local tests pass.
-8. Optional: with approved Langfuse credentials, show the agent, generation, and tool observations for one repair; explain the external data boundary.
-
-## Maintainer
-
-This lab is maintained by [Mahi Begoug](https://github.com/MahiBegoug) ([gm_begoug@esi.dz](mailto:gm_begoug@esi.dz)).
-
-## License
-
-This lab is available under the [MIT License](LICENSE). You may use, modify, and share it, provided the copyright and license notice are retained.
+### What each file will do
+
+| File | Concrete responsibility |
+| --- | --- |
+| `README.md` | Gives you the overview, workflow, safety rules, and task links. |
+| `requirements.txt` | Installs the Python libraries used by the lab. It is supplied. |
+| `tasks/*.md` | Gives the exact instructions, prompt, and checkpoint for one task. They are supplied. |
+| `pytest.ini` | Restricts host `pytest` to your `tests/` folder, so host Python never runs files in `evals/`. |
+| `main.py` | Accepts `repair` and `ui` commands, starts the selected workflow, and prints the visible trace. |
+| `bootstrap.py` | Creates and connects the selected model client, Docker-backed tools, and repair service. Optional extensions are connected here only when enabled. |
+| `core/__init__.py` | Marks `core/` as an importable package. |
+| `core/models.py` | Defines small result objects, including test results, model actions, and the final repair result. |
+| `core/ports.py` | Describes the small capabilities the repair agent needs: chat, file tools, tests, and optional research or trace recording. |
+| `core/prompts.py` | Holds the system and user messages, JSON action rules, and tool-result formatting. |
+| `core/repair_agent.py` | Runs the bounded repair loop: ask the model, validate one action, call one permitted tool, store the observation, and stop safely. |
+| `core/repair_service.py` | Selects an allowed evaluation project, creates its disposable workspace, and returns the agent result. |
+
+| File | Concrete responsibility |
+| --- | --- |
+| `adapters/__init__.py` | Marks `adapters/` as an importable package. |
+| `adapters/gradio_ui.py` | Presents the existing repair service in a page with project selection, trace, changed code, test output, and a ZIP download. |
+| `adapters/models/__init__.py` | Marks the model-adapter folder as importable. |
+| `adapters/models/ollama.py` | Sends messages to local Ollama and returns the model's text response. |
+| `adapters/models/scripted.py` | Returns predetermined model replies so your repair-loop tests are repeatable without an LLM. |
+| `adapters/sandbox/__init__.py` | Marks the sandbox folder as importable. |
+| `adapters/sandbox/Dockerfile` | Defines the small non-root Docker image that can run pytest. |
+| `adapters/sandbox/runner.py` | Copies a chosen evaluation project and starts the restricted Docker test command against that copy. |
+| `adapters/sandbox/repair_tools.py` | Implements safe `read_file`, `edit_file`, and `run_tests` operations inside the copied workspace. |
+| `adapters/research/__init__.py` | Marks the optional research-adapter folder as importable. |
+| `adapters/research/github_research.py` | Optional, bounded client for GitHub code-search evidence. It does not browse arbitrary URLs. |
+| `adapters/observability/__init__.py` | Marks the optional observability-adapter folder as importable. |
+| `adapters/observability/langfuse.py` | Optional Langfuse Cloud recorder for the public repair trajectory. |
+
+| File or folder | Concrete responsibility |
+| --- | --- |
+| `evals/<case>/` | Supplied buggy source file and pytest file. The agent can read a copied case but must never modify the original. |
+| `tests/test_tools.py` | Proves safe path handling, file edits, and test-runner delegation. |
+| `tests/test_agent.py` | Proves the repair loop with `ScriptedClient`, including invalid JSON and stopping rules. |
+| `tests/test_github_research.py` | Optional Task 9 checks the GitHub boundary with fake HTTP responses. |
+| `tests/test_langfuse_observability.py` | Optional Task 10 checks trajectory recording with a fake Langfuse client. |
+
+One practical rule will keep the project understandable: files in `core/` must not import files from `adapters/`. `bootstrap.py` is the one place that selects the real model, sandbox, and UI pieces and connects them to the repair service.
+
+## Build tasks
+
+Complete the tasks in this order. Task 7 is optional; Task 8 can use the scripted repair if a live model is unavailable.
+
+1. [Task 0: Set up the repository and environment, 10 minutes](tasks/00-setup.md)
+2. [Task 1: Define the agent's small vocabulary, 15 minutes](tasks/01-core-vocabulary.md)
+3. [Task 2: Build the safe workspace and tools, 25 minutes](tasks/02-sandbox-tools.md)
+4. [Task 3: Prepare prompts and a test model, 15 minutes](tasks/03-prompts-and-clients.md)
+5. [Task 4: Build the repair loop, 40 minutes](tasks/04-repair-loop.md)
+6. [Task 5: Run a scripted repair from the terminal, 15 minutes](tasks/05-cli-repair.md)
+7. [Task 6: Show a repair in a small web page, 20 minutes](tasks/06-gradio-ui.md)
+8. [Task 7: Try a real local model with Ollama (optional), 15 minutes](tasks/07-live-ollama.md)
+9. [Task 8: Prepare the final demonstration, 10 minutes](tasks/08-final-demonstration.md)
+
+### Optional extensions after the required activity
+
+These extensions are deliberately separate from the required lab. Do not begin
+either one until the scripted repair and its checkpoints work.
+
+10. [Task 9: Add bounded GitHub research (optional), 20 minutes](tasks/09-github-research.md)
+11. [Task 10: Record a trajectory with Langfuse Cloud (optional), 20 minutes](tasks/10-langfuse-observability.md)
