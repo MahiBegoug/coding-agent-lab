@@ -5,7 +5,7 @@ calls at most one tool. It does not start Docker or import an adapter.
 """
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from core.models import ModelAction, RepairResult, TestResult
@@ -79,6 +79,7 @@ class RepairAgent:
         relative_files: list[str],
         workspace: str = "",
         decision_budget: int = DECISION_BUDGET,
+        trace_listener: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self.client = client
         self.tools = tools
@@ -86,11 +87,19 @@ class RepairAgent:
         self.relative_files = list(relative_files)
         self.workspace = workspace
         self.decision_budget = decision_budget
+        self.trace_listener = trace_listener
 
     def repair(self) -> RepairResult:
         """Ask for one action at a time until the repair succeeds or stops."""
 
-        trace: list[dict[str, object]] = [{"event": "repair_started", "case": self.case_name}]
+        trace: list[dict[str, object]] = []
+
+        def emit(event: dict[str, object]) -> None:
+            trace.append(event)
+            if self.trace_listener is not None:
+                self.trace_listener(event)
+
+        emit({"event": "repair_started", "case": self.case_name})
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_instruction()},
             {"role": "user", "content": case_request(self.case_name, self.relative_files)},
@@ -102,7 +111,7 @@ class RepairAgent:
         test_result: TestResult | None = None
 
         def finish(passed: bool, reason: str) -> RepairResult:
-            trace.append({"event": "repair_finished", "passed": passed, "reason": reason})
+            emit({"event": "repair_finished", "passed": passed, "reason": reason})
             return RepairResult(
                 passed=passed,
                 trace=trace,
@@ -120,7 +129,8 @@ class RepairAgent:
             }
             if action.summary:
                 event["summary"] = action.summary
-            trace.append(event)
+            event["observation"] = observation
+            emit(event)
             messages.append({"role": "user", "content": tool_result_message(observation)})
 
         for _ in range(self.decision_budget):
@@ -128,13 +138,13 @@ class RepairAgent:
                 reply = self.client.chat(messages)
             except Exception as exc:
                 reason = f"client error: {exc}"
-                trace.append({"event": "model_response", "accepted": False, "reason": reason})
+                emit({"event": "model_response", "accepted": False, "reason": reason})
                 return finish(False, reason)
 
             try:
                 action = parse_model_action(reply)
             except ValueError as exc:
-                trace.append({"event": "model_response", "accepted": False, "reason": str(exc)})
+                emit({"event": "model_response", "accepted": False, "reason": str(exc)})
                 return finish(False, str(exc))
 
             response: dict[str, object] = {
@@ -144,7 +154,9 @@ class RepairAgent:
             }
             if action.summary:
                 response["summary"] = action.summary
-            trace.append(response)
+            if action.tool in {"read_file", "edit_file"}:
+                response["path"] = action.arguments.get("path")
+            emit(response)
             messages.append({"role": "assistant", "content": reply})
 
             if action.tool == "edit_file" and not (saw_read and saw_failing_test):

@@ -6,6 +6,8 @@ This is the only module that imports both core and adapters.
 import json
 from pathlib import Path
 
+from collections.abc import Callable
+
 from adapters.models.scripted import ScriptedClient
 from adapters.sandbox.repair_tools import RepairTools
 from adapters.sandbox.runner import WorkspaceRunner
@@ -118,7 +120,10 @@ def scripted_replies(case_name: str) -> list[str]:
         raise ValueError(f"No scripted sequence for {case_name}") from exc
 
 
-def build_service(provider: str) -> RepairService:
+def build_service(
+    provider: str,
+    trace_listener: Callable[[dict[str, object]], None] | None = None,
+) -> RepairService:
     """Create the runner, scripted client, tools, agent, and repair service."""
 
     if provider != "scripted":
@@ -134,6 +139,7 @@ def build_service(provider: str) -> RepairService:
             case_name=case_name,
             relative_files=relative_files,
             workspace=workspace,
+            trace_listener=trace_listener,
         )
 
     return RepairService(evals_root=EVALS_ROOT, runner=runner, make_agent=make_agent)

@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from bootstrap import build_service
+from core.cli_trace import format_repair_trace_event, print_repair_summary
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,37 +26,19 @@ def main(argv: list[str] | None = None) -> int:
         create_demo().launch(allowed_paths=[str(workspace_cache)])
         return 0
 
+    def print_trace_event(event: dict[str, object]) -> None:
+        print(format_repair_trace_event(event), flush=True)
+
     try:
-        result = build_service(args.provider).repair(args.project)
+        result = build_service(args.provider, trace_listener=print_trace_event).repair(
+            args.project
+        )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    for event in result.trace:
-        print(_format_event(event))
-    print("changed files:")
-    if result.changed_files:
-        for name in result.changed_files:
-            print(name)
-    else:
-        print("(none)")
-    if result.test_result is None:
-        print("final test: none")
-    else:
-        print(
-            "final test: "
-            f"passed={result.test_result.passed} returncode={result.test_result.returncode}"
-        )
-        print(result.test_result.output, end="" if result.test_result.output.endswith("\n") else "\n")
+    print_repair_summary(result)
     return 0 if result.passed else 1
-
-
-def _format_event(event: dict[str, object]) -> str:
-    parts = [str(event.get("event", "event"))]
-    for key in ("case", "tool", "summary", "accepted", "ok", "detail", "reason", "passed"):
-        if key in event:
-            parts.append(f"{key}={event[key]}")
-    return " ".join(parts)
 
 
 if __name__ == "__main__":
